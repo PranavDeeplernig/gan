@@ -1,0 +1,10 @@
+torch>=2.0.0
+torch-geometric
+pandas
+numpy
+plotly
+psycopg2-binary
+tqdm
+numexpr
+matplotlib
+scikit-learn
