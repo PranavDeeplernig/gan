@@ -15,7 +15,7 @@ def load_sharded_pt(dir_path):
         all_data.extend(torch.load(path, weights_only=False))
     return all_data
 
-def convert_to_tensor_format(input_path, output_path, max_nodes=40):
+def convert_to_tensor_format(input_path, max_nodes=40):
     if os.path.isdir(input_path):
         raw_data = load_sharded_pt(input_path)
     else:
@@ -23,26 +23,20 @@ def convert_to_tensor_format(input_path, output_path, max_nodes=40):
         raw_data = torch.load(input_path, weights_only=False)
     
     num_seq = len(raw_data)
-    seq_len = 20 # As defined in your config
+    seq_len = 20
     node_dim = 4
     agent_dim = 3
     
-    # Pre-allocate HUGE tensors (Compact Memory)
-    # [N_Seqs, T, Max_Nodes, F]
     X_tensor = torch.zeros((num_seq, seq_len, max_nodes, node_dim), dtype=torch.float32)
     Agent_tensor = torch.zeros((num_seq, seq_len, max_nodes, agent_dim), dtype=torch.float32)
     Y_tensor = torch.zeros((num_seq,), dtype=torch.long)
-    
-    # Adjacency matrices for speed
-    # [N_Seqs, T, Max_Nodes, Max_Nodes] - 1 if connected, 0 if not
     Adj_tensor = torch.zeros((num_seq, seq_len, max_nodes, max_nodes), dtype=torch.bool)
 
-    print("Converting to Dense Tensors...")
+    print(f"Processing {num_seq} sequences...")
     for i, seq_item in enumerate(tqdm(raw_data)):
-        seq_data = seq_item['x'] # List of Data objects
+        seq_data = seq_item['x']
         y_label = seq_item['y']
         
-        # y can be a tensor or a number
         if isinstance(y_label, torch.Tensor):
             Y_tensor[i] = y_label.item()
         else:
@@ -51,42 +45,76 @@ def convert_to_tensor_format(input_path, output_path, max_nodes=40):
         for t, snapshot in enumerate(seq_data):
             num_nodes = snapshot.x.shape[0]
             limit = min(num_nodes, max_nodes)
-            
-            # 1. Copy Node Features
             X_tensor[i, t, :limit, :] = snapshot.x[:limit]
-            
-            # 2. Copy Agent Features
             Agent_tensor[i, t, :limit, :] = snapshot.global_p[:limit]
             
-            # 3. Fill Adjacency
             edges = snapshot.edge_index
             mask = (edges[0] < limit) & (edges[1] < limit)
             valid_edges = edges[:, mask]
             Adj_tensor[i, t, valid_edges[0], valid_edges[1]] = 1
 
-    print(f"Saving optimized dataset to {output_path}...")
-    torch.save({
+    return {
         'x': X_tensor,
         'adj': Adj_tensor,
         'agent': Agent_tensor,
         'y': Y_tensor
-    }, output_path)
-    print("Done! Optimization complete.")
+    }
+
+def normalize_and_save(train_data, val_data, train_out, val_out, stats_out):
+    logging.info("Applying Rolling Z-Score Normalization (Past 20 Points)...")
+    
+    def apply_rolling_norm(tensor):
+        """
+        tensor: [B, T, N, F]
+        Normalizes each window [T, N] for each feature F independently.
+        """
+        # Mean across T (time) and N (nodes) to get local regime stats
+        # result: [B, 1, 1, F]
+        mu = tensor.mean(dim=(1, 2), keepdim=True)
+        std = tensor.std(dim=(1, 2), keepdim=True) + 1e-9
+        
+        return (tensor - mu) / std
+
+    # Apply rolling normalization to Node features
+    logging.info("Normalizing Node Features...")
+    train_data['x'] = apply_rolling_norm(train_data['x'])
+    val_data['x'] = apply_rolling_norm(val_data['x'])
+    
+    # Apply rolling normalization to Agent features
+    logging.info("Normalizing Agent Features...")
+    train_data['agent'] = apply_rolling_norm(train_data['agent'])
+    val_data['agent'] = apply_rolling_norm(val_data['agent'])
+    
+    # Still save global stats as a reference/sanity check
+    x_mean_global = train_data['x'].mean()
+    logging.info(f"Global mean after rolling norm: {x_mean_global.item():.6f}")
+    
+    logging.info(f"Saving rolling-normalized datasets to {train_out} and {val_out}...")
+    torch.save(train_data, train_out)
+    torch.save(val_data, val_out)
+    
+    # norm_stats.pth now stores global reference but is optional for inference 
+    # as inference will normalize its own window
+    torch.save({'type': 'rolling_local', 'window_size': 20}, stats_out)
 
 if __name__ == "__main__":
     train_in = 'graph_data_output/train_graphs'
-    train_out = 'graph_data_output/train_tensor.pt'
     val_in = 'graph_data_output/val_graphs'
+    
+    train_out = 'graph_data_output/train_tensor.pt'
     val_out = 'graph_data_output/val_tensor.pt'
+    stats_out = 'graph_data_output/norm_stats.pth'
 
-    if os.path.isdir(train_in) or os.path.exists(train_in + ".pt"):
-        inp = train_in if os.path.isdir(train_in) else train_in + ".pt"
-        convert_to_tensor_format(inp, train_out)
-    else:
-        print(f"Missing {train_in}")
+    if (os.path.isdir(train_in) or os.path.exists(train_in + ".pt")) and \
+       (os.path.isdir(val_in) or os.path.exists(val_in + ".pt")):
         
-    if os.path.isdir(val_in) or os.path.exists(val_in + ".pt"):
-        inp = val_in if os.path.isdir(val_in) else val_in + ".pt"
-        convert_to_tensor_format(inp, val_out)
+        t_inp = train_in if os.path.isdir(train_in) else train_in + ".pt"
+        v_inp = val_in if os.path.isdir(val_in) else val_in + ".pt"
+        
+        train_data = convert_to_tensor_format(t_inp)
+        val_data = convert_to_tensor_format(v_inp)
+        
+        normalize_and_save(train_data, val_data, train_out, val_out, stats_out)
+        print("Done! Normalization and Optimization complete.")
     else:
-        print(f"Missing {val_in}")
+        print("Missing required graph directories.")
