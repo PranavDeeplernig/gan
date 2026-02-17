@@ -139,23 +139,14 @@ def train():
         
         scheduler.step()
         
+        # Checkpoint & Auto-Git Sync
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), 'graph_tkan_best.pth')
-            logging.info("Saved Best Model Checkpoint.")
-
-        avg_train_loss = train_loss / len(train_loader)
-        avg_val_loss = val_loss / len(val_loader)
-        val_acc = 100 * val_correct / val_total
-        
-        logging.info(f"Epoch {epoch+1}: Train Loss={avg_train_loss:.4f} | Val Loss={avg_val_loss:.4f} | Val Acc={val_acc:.2f}%")
-        
-        scheduler.step()
-        
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), 'graph_tkan_best.pth')
-            logging.info("Saved Best Model Checkpoint.")
+            logging.info(f"Saved Best Model Checkpoint (Val Acc: {val_acc:.2f}%)")
+            
+            # Auto-Push to GitHub
+            auto_git_push(msg=f"Auto-commit: Epoch {epoch+1} | Val Acc {val_acc:.2f}% | Val Loss {avg_val_loss:.4f}")
 
 if __name__ == '__main__':
     train()
