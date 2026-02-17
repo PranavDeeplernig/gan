@@ -1,0 +1,10 @@
+# Large reconstructed tensors
+graph_data_output/*.pt
+!graph_data_output/norm_stats.pth
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Logs
+*.log
